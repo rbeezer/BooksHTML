@@ -1,0 +1,1277 @@
+#!/usr/bin/perl -w
+
+##############################################################
+#
+# This program reads a latex file that is a section of a chapter of
+# Rob Beezer's linear algebra book and extracts the theorems, definitions,
+# and examples as knowls.
+#
+#############################################################
+
+#use GenderFromName2;
+use LWP::UserAgent;
+
+my $hideexamples=1;
+my $hideproofs=1;
+
+my $inputdirectory=$ARGV[0] || die "no input directory specified\n";
+
+my $inputfile = $inputdirectory."/fcla.tex";
+
+open INFILE, $inputfile  or die "Couldn't open file: $!";
+
+my $outdir="thebookhtml";
+system("cp ".$inputdirectory."/diagrams/png/*png ".$outdir."/.");
+
+
+{
+  local $/=undef;
+  open NAVFILE,  "<$outdir/nav.txt"  or warn "Need to run program again: $! \n";
+  $navcontents = <NAVFILE>;
+  close NAVFILE;
+}
+
+my %chaptitle=();  # we read these in from a file, then update them, then write to the
+my %sectitle=();   # file for use the next time
+my %subsectitle=();   
+my %appdxtitle=();   
+{
+  open NAMESFILE,  "<$outdir/hashes.txt"  or warn "Need to run program again: $! \n";
+  while($line = <NAMESFILE>) {
+     if($line =~ /(.+):(.+)+=>(.+)$/) {
+        if($1 eq "chaptitle") {
+          $chaptitle{$2}=$3
+        }
+        elsif($1 eq "sectitle") {
+          $sectitle{$2}=$3
+        }
+        elsif($1 eq "subsectitle") {
+          $subsectitle{$2}=$3
+        }
+        elsif($1 eq "appdxtitle") {
+          $appdxtitle{$2}=$3
+        }
+     }
+   }
+           
+  close NAMESFILE;
+
+print %sectitle;
+}
+
+open NAVFILE, ">$outdir/nav.txt" or die "Couldn't open file: $!";
+
+my $tocnav=qq|<div id="sidebar">\n|; #the navigation bar
+
+# read through the file, locating the chapters and sections
+
+while($line = <INFILE>) {
+
+   if($line=~ /\\prt\{C/) { last }
+   # skip until part C starts
+
+}
+
+processfrontmatter();
+
+#$tocnav .= qq|<ul><li><a href="preface.html">Preface</a></ul>\n|;
+$tocnav .= qq|<h2 class="link"><a href=".">Home</a></h2>\n|;
+$tocnav .= qq|<ul class="list"><li><a href="preface.html">Preface<\/a><\/li>\n|;
+$tocnav .= qq|<li><a href="acknowledgements.html">Acknowledgments<\/a><\/li><\/ul>\n|;
+
+print "up to part C\n";
+
+
+my $firstchap=1;
+my $firstappdx=1;
+
+while($line = <INFILE>) {
+
+# print($line,"\n");
+
+   if($line =~ /^\\prt{T}/) { last }  # end when we get to the topics, for now
+
+   elsif($line =~ /\\chap\{([A-Z]+)\}\{([^\}]+)\}/) {
+       $chaptag=$1;
+       $chaphtmlfile=$chaptag."chapter.html";
+       $chaptitle=$2;
+       $chaptitle{$chaptag}=$chaptitle;
+       if(!$firstchap) { 
+           $tocnav .= "</ul>\n";
+       }
+       else { $firstchap = 0 }
+
+# we found the start of a chapter.  So we add it to the toc nav box,
+# and start building the html file that holds the chapter.
+
+#   add the chapter to the toc nav box
+   $tocnav .= qq|\n<h2 class="link"><a href="$chaphtmlfile">$chaptitle</a></h2>\n\n<ul class="list">\n|;
+
+# now make the html version of the chapter
+
+
+{
+  close CHAPFILE;
+  local $/=undef;
+  open CHAPFILE, $inputdirectory."/chapintros/".$chaptag.".tex"  or die "Couldn't open file: $!";
+  $chaptercontents = <CHAPFILE>;
+  close CHAPFILE;
+}
+
+$chaptercontents=beezerconvert($chaptercontents);
+$chaptercontents = "<p>\n".$chaptercontents."</p>\n\n";
+$chaptercontents = "<h1>$chaptitle</h1>\n".$chaptercontents;
+
+
+open CHAPFILE, ">$outdir/$chaphtmlfile" or die "Couldn't open file: $!";
+print CHAPFILE header("chapter",$chaptitle,$chaptag);
+print CHAPFILE $navcontents;
+print CHAPFILE $chaptercontents;
+
+   }
+
+   elsif($line=~ /\\appdx\{([A-Z]+)\}\{([^\}]+)\}/) {
+      $appdxtag=$1;
+      $chaptag=$appdxtag;
+      $appdxhtmlfile=$appdxtag."chapter.html";
+      $appdxtitle=$2;
+      $appdxtitle{$appdxtag}=$appdxtitle;
+#      $chaptitle{$appdxtag}=$appdxtitle;
+      if($firstappdx) { 
+         $tocnav .= qq|\n<h2 class="namethisclass">Appendices</h2>\n|;
+         $firstappdx = 0 
+      }
+      $tocnav .= "</ul>\n";
+      if($appdxtitle =~ /Computation Notes/) { next() }
+      $tocnav .= qq|\n<h2 class="link"><a href="$appdxhtmlfile">$appdxtitle</a></h2>\n\n<ul class="list">\n|;
+      if($appdxtitle =~ /Archetypes/) { $tocnav .= linkstoarchetypes() }
+
+# Most of the appendices don't have "chapter" files.
+# So we are going to have to patch together a way to handle them
+
+{
+  close APPDXFILE;
+  $appdxcontents="";
+  local $/=undef;
+  open APPDXFILE, $inputdirectory."/appendices/".$appdxtag.".tex"  or $appdxcontents=" " && warn "Couldn't open file $appdxtag: $!";
+  if(!$appdxcontents) {  $appdxcontents = <APPDXFILE>}
+#if($appdxtag eq "A") { print "\n\n\nFound Appendix A\n\n\n"; print $appdxcontents}
+  close APPDXFILE;
+}
+
+processarchetypes($appdxcontents);
+if($appdxcontents) {$appdxcontents=beezerconvert($appdxcontents)}
+$appdxcontents = "<p>\n".$appdxcontents."</p>\n\n";
+$appdxcontents = "<h1>$appdxtitle</h1>\n".$appdxcontents;
+
+
+open APPDXFILE, ">$outdir/$appdxhtmlfile" or die "Couldn't open file: $!";
+print("                wrote to $appdxhtmlfile\n");
+print APPDXFILE header("appendix",$appdxtitle,$appdxtag);
+#ooooooooo
+print APPDXFILE $navcontents;
+print APPDXFILE $appdxcontents;
+
+   }
+
+
+   elsif($line =~ /\\sect\{([A-Z]+)\}\{([^\}]+)\}/) {
+       $sectag=$1;
+       $sechtmlfile=$sectag."section.html";
+       $sectitle=$2;
+       $sectitle{$sectag}=$sectitle;
+
+#  put the section in the navigation box
+   $tocnav .= qq|<li><a href="$sechtmlfile">$sectitle</a></li>\n|;
+
+print CHAPFILE qq|<h3><a href="|.$sechtmlfile.qq|">|.$sectitle.qq|</a></h3>\n|;
+
+# make the html version of the section
+
+{
+  local $/=undef;
+  open SECFILE, $inputdirectory."/sections/".$sectag.".tex"  or die "Couldn't open file: $!";
+  $sectioncontents = <SECFILE>;
+  close SECFILE;
+}
+
+# before we convert the original LaTeX of the section file to html, we scan it to make copies
+# of the definitions, theorems, etc, which will be knowls.
+
+processsubsections($sectioncontents, $sectag);
+processdefinitions($sectioncontents, $sectag);
+#processproperties($sectioncontents, $sectag);
+# PPPPPP problem here
+processexamples($sectioncontents, $sectag);
+processtheorems($sectioncontents, $sectag);
+
+$sectioncontents=beezerconvert($sectioncontents);
+$sectioncontents = "<p>\n".$sectioncontents."</p>";
+#$sectioncontents = "<h2>$sectitle</h2>\n".$sectioncontents;
+
+
+open SECFILE, ">$outdir/$sechtmlfile" or die "Couldn't open file: $!";
+print SECFILE header("section",$sectitle,$chaptag,$sectag);
+print SECFILE $navcontents;
+print SECFILE $sectioncontents;
+
+# here is the place to take care of reading questions and exercises
+
+print SECFILE footer();
+close SECFILE;
+
+   }
+}
+
+$tocnav = $tocnav."\n</div>\n";
+print NAVFILE $tocnav;
+
+open INDEXFILE, ">$outdir/index.html" or die "Couldn't open file: $!";
+print INDEXFILE header("","A First Course in Linear Algebra");
+print INDEXFILE $navcontents;
+print INDEXFILE titlepage();
+print INDEXFILE footer();
+close INDEXFILE;
+
+open NAMESFILE, ">$outdir/hashes.txt" or die "Couldn't open file: $!";
+while (($key, $value) = each(%chaptitle)){
+     print NAMESFILE "chaptitle:".$key."=>".$value."\n";
+}
+print NAMESFILE "\n";
+while (($key, $value) = each(%sectitle)){
+     print NAMESFILE "sectitle:".$key."=>".$value."\n";
+}
+print NAMESFILE "\n";
+while (($key, $value) = each(%subsectitle)){
+     print NAMESFILE "subsectitle:".$key."=>".$value."\n";
+}
+print NAMESFILE "\n";
+while (($key, $value) = each(%appdxtitle)){
+     print NAMESFILE "appdxtitle:".$key."=>".$value."\n";
+}
+close NAMESFILE;
+
+die();
+
+
+
+###########################################################
+
+sub linkstoarchetypes {
+
+my $thelinks= qq|
+<li> &nbsp;&nbsp;&nbsp;<span>
+    <a href="Aarchetype.html">A</a>
+    <a href="Barchetype.html">B</a>
+    <a href="Carchetype.html">C</a>
+    <a href="Darchetype.html">D</a>
+    <a href="Earchetype.html">E</a>
+    <a href="Farchetype.html">F</a>
+    <a href="Garchetype.html">G</a>
+    <a href="Harchetype.html">H</a>
+    </span>
+</li>
+<li> &nbsp;&nbsp;&nbsp;<span>
+    <a href="Iarchetype.html">I</a>
+    <a href="Jarchetype.html">J</a>
+    <a href="Karchetype.html">K</a>
+    <a href="Larchetype.html">L</a>
+    <a href="Marchetype.html">M</a>
+    <a href="Aarchetype.html">N</a>
+    <a href="Oarchetype.html">O</a>
+    <a href="Parchetype.html">P</a>
+    </span>
+</li>
+<li> &nbsp;&nbsp;&nbsp;<span>
+    <a href="Qarchetype.html">Q</a>
+    <a href="Rarchetype.html">R</a>
+    <a href="Sarchetype.html">S</a>
+    <a href="Tarchetype.html">T</a>
+    <a href="Parchetype.html">P</a>
+    <a href="Varchetype.html">V</a>
+    <a href="Warchetype.html">W</a>
+    <a href="Xarchetype.html">X</a>
+    </span>
+</li>
+|;
+
+return($thelinks)
+
+}
+
+###########################################################
+sub processtheorems {
+
+my $filecontentsORIG = shift;
+$type="theorem";
+$Type="Theorem";
+#while($filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{$type\}/sg) {
+while($filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{$type\}\s+\%\s+\\begin{proof}(.+?)\\end{proof}/sg) {
+
+
+#first save the theorem
+$knowlfilenamestub=$1."theorem";;
+ $knowlfilename = $outdir."/".$knowlfilenamestub.".knowl";
+ $knowlbody=beezerconvert($3);
+$knowlcontents="<p>\n<b>$Type: $2<\/b><\/p>\n<p>\n$knowlbody\n<\/p>\n";
+
+#$knowlcontents.= qq|<p>\n<a knowl="$knowlfilename.proof">Proof<\/a>\n<\/p>\n|;
+$knowlcontents.= qq|<p>\n<a knowl="$knowlfilenamestub.proof.knowl">Proof<\/a>\n<\/p>\n|;
+
+print("found: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+
+     print OUTFILE $knowlcontents;
+
+     close(OUTFILE);
+
+#then save the proof
+$knowlfilenamestub=$knowlfilenamestub.".proof";
+ $knowlfilename = $outdir."/".$knowlfilenamestub.".knowl";
+$knowlbody=beezerconvert($4);
+$knowlbody= "\n<p>\n".$knowlbody."\n</p>\n";
+$knowlcontents=$knowlbody;
+
+print("found: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+
+     print OUTFILE $knowlcontents;
+
+     close(OUTFILE);
+ }
+}
+
+###########################################################
+
+sub processarchetypes {
+
+my $filecontentsORIG = shift;
+
+my $type="archetype";
+my $Type="Archetype";
+
+while(  $filecontentsORIG =~ /\\archetypename{([A-Z])}.*?\\capsule{([^\}]*)}(.*?)\\newpage/sg ) {
+#it just so happens that Rob ends an archetype definition with a newpage (except the last one, which we added).  A special ending tag would be better.
+
+#while( # $filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{$type\}/sg ||
+#       $filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{([^\}\{]*({[^\}]*}[^\}]*){0,1})}{[^\}]*}(.*?)\\end\{$type\}/sg) {
+
+$knowlfilenameSHORT=$1.$type.".knowl";
+$htmlfilename=$1.$type.".html";
+ $knowlfilename = $outdir."/".$knowlfilenameSHORT;
+ $htmlfilename = $outdir."/".$htmlfilename;
+ $knowlbody=beezerconvert($3);
+$knowlcontents="<p>\n<b> Archetype $1 Summary: <\/b> $2<\/p>\n<p>\n$knowlbody\n<\/p>\n";
+
+
+print("found: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+     print OUTFILE $knowlcontents;
+     close(OUTFILE);
+
+     open(OUTFILE, ">$htmlfilename") or warn "the file $! cannot be opened \n";
+     print OUTFILE header("archetype","Archetype ".$1,"A",$1);
+#print SECFILE header("section",$sectitle,$chaptag,$sectag);
+     print OUTFILE $navcontents;
+#     print OUTFILE qq|    <!-- #include virtual="$knowlfilenameSHORT" --> |;
+     print OUTFILE $knowlcontents;
+     print OUTFILE footer();
+     close(OUTFILE);
+
+  }
+}
+###########################################################
+sub processexamples {
+
+my $filecontentsORIG = shift;
+$type="example";
+$Type="Example";
+
+while(  $filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{(.*?)}{[^\}]*}(.*?)\\end\{$type\}/sg ) {
+#while( # $filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{$type\}/sg ||
+#	$filecontentsORIG =~ /\\begin{$type}{([^\}]*)}{([^\}\{]*({[^\}]*}[^\}]*){0,1})}{[^\}]*}(.*?)\\end\{$type\}/sg) {
+
+$knowlfilename=$1.$type.".knowl";;
+ $knowlfilename = $outdir."/".$knowlfilename;
+ $knowlbody=beezerconvert($3);
+$knowlcontents="<p>\n<em>$Type: $2<\/em><\/p>\n<p>\n$knowlbody\n<\/p>\n";
+
+print("found: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+
+     print OUTFILE $knowlcontents;
+
+     close(OUTFILE);
+
+  }
+}
+###########################################################
+sub processdefinitions {
+
+my $filecontentsORIG = shift;
+
+#pull outthe definitions
+while($filecontentsORIG =~ /\\begin{definition}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{definition\}/sg) {
+
+ $knowlfilename=$1."definition.knowl";
+ $knowlfilename = $outdir."/".$knowlfilename;
+ $knowlbody=beezerconvert($3);
+ $knowlcontents="<p>\n<em>Definition: $2<\/em><\/p>\n<p>\n$knowlbody\n<\/p>\n";
+ 
+ print("found definition in: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+
+     print OUTFILE $knowlcontents;
+
+     close(OUTFILE);
+
+ }
+
+}
+
+###########################################################
+sub processproperties {
+
+my $filecontentsORIG = shift;
+
+
+#pull out the properties and denotes
+#$type="property";
+#$Type="Property";
+
+ while($filecontentsORIG =~ /\\(property){([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\%/sg) {
+
+ print("found $2\n");
+
+ $knowlfilename=$2.$1.".knowl";
+ $knowlfilename = $outdir."/".$knowlfilename;
+ $knowlbody=beezerconvert($4);
+$knowlcontents="<p>\n<em>Property: $3<\/em><\/p>\n<p>\n$knowlbody\n<\/p>\n";
+
+print("found: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+
+     print OUTFILE $knowlcontents;
+
+     close(OUTFILE);
+  }
+
+ while($filecontentsORIG =~ /\\(denote){([^\}]*)}{([^\}]*)}{[^\}]*}/sg) {
+
+ print("found $2\n");
+
+ $knowlfilename=$2.$1.".knowl";
+ $knowlfilename = $outdir."/".$knowlfilename;
+ $knowlbody=beezerconvert($4);
+$knowlcontents="<p>\n<em>Notation: $3<\/em><\/p>\n<p>\n$knowlbody\n<\/p>\n";
+
+print("found: ",$knowlfilename,"\n");
+
+     open(OUTFILE, ">$knowlfilename") or warn "the file $! cannot be opened \n";
+
+     print OUTFILE $knowlcontents;
+
+     close(OUTFLE);
+  }
+
+}
+
+###########################################################
+sub processsubsections {
+
+my $filecontentsORIG = shift;
+
+#pull out the subsection titles
+
+ while($filecontentsORIG =~ /\\subsect{([^\}]*)}{([^\}]*)}/g) {
+
+ print("found subsection $2\n");
+
+ $subsectitle{$1}=$2
+  }
+}
+
+###########################################################
+
+sub processfrontmatter {
+
+$chaptitle{"preface"}="Preface";
+$chaptitle{"acknowledgements"}="Acknowledgements";
+{
+  local $/=undef;
+
+  open PREFACE, $inputdirectory."/includes/preface.tex"  or die "Couldn't open file: $!";
+  $prefacecontents = <PREFACE>;
+  close PREFACE;
+
+  open ACK, $inputdirectory."/includes/acknowledgements.tex"  or die "Couldn't open file: $!";
+  $acknowledgementscontent = <ACK>;
+  close ACK;
+
+
+}
+
+$prefacecontents=beezerconvert($prefacecontents);
+$prefacecontents = "<p>\n".$prefacecontents."</p>";
+
+$filename = $outdir."/preface.html";
+open(PREFACE, ">$filename") or warn "the file $! cannot be opened \n";
+
+print PREFACE header("frontmatter","Preface","preface","");
+#ppppppppp
+print PREFACE $navcontents;
+print PREFACE $prefacecontents;
+print PREFACE footer();
+close PREFACE;
+
+$acknowledgementscontent=beezerconvert($acknowledgementscontent);
+$acknowledgementscontent = "<p>\n".$acknowledgementscontent."</p>";
+
+$filename = $outdir."/acknowledgements.html";
+open(PREFACE, ">$filename") or warn "the file $! cannot be opened \n";
+
+print PREFACE header("frontmatter","Acknowledgements","acknowledgements","");
+print PREFACE $navcontents;
+print PREFACE $acknowledgementscontent;
+print PREFACE footer();
+close PREFACE;
+
+}
+
+###########################################################
+sub beezerconvert {
+
+my $thetext=shift;
+
+$thetext =~ s/\\computenote.*?\s+\%\s+//gs;
+# ? for minimal match, and s for . to match newline
+
+$thetext =~ s/</ < /sg;   # don't want \lt to look like the start of a tag
+
+$thetext =~ s/\n\%\n/\n/sg; 
+$thetext =~ s/\%\%\%\%[^\n]*\n//sg;  # delete everything on the line after %%%%
+
+$thetext =~ s/([^\\])\%.*/$1/g;  # delete everything on the line after %
+$thetext =~ s/\\\%/% /g;  # \% is a real %
+
+$thetext =~ s///g;
+$thetext =~ s/\\'{e}/&eacute;/g;
+$thetext =~ s/\\protect//g;
+
+
+$thetext =~ s/\\dots\b/.../g;
+$thetext =~ s/\`\`/"/g;
+$thetext =~ s/\'\'/"/g;
+
+$thetext =~ s/\\begin{align\*}/<\/p>\n<p>\n\\begin{align\*}/sg;
+$thetext =~ s/\\end{align\*}/\\end{align\*}\n<\/p>\n<p>\n/sg;
+
+$thetext =~ s/\\subsect{([^\}]*)}{([^\}]*)}/<\/p>\n<a name="$1"><\/a>\n<h2>$2<\/h2>\n<p>/g;
+
+$thetext =~ s/\\begin{definition}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{definition\}/<\/p><p><b>Definition $1<\/b> ($2) $3\n<\/p>\n<p>\n/sg;
+
+
+$thetext =~ s/\\define{([^\}]*)}/<em>$1<\/em>/g;
+
+if($hideexamples) {
+  $thetext =~ s/\\begin{example}{([^\}]*)}{([^\}]*)}{[^\}]*}.*?\\end{example}/<\/p><p><b>Example $1: <\/b> <a knowl="$1example.knowl">$2<\/a>\. &nbsp;\n <\/p>\n<p>/gs;
+  $thetext =~ s/\\begin{example}{([^\}]*)}{([^\}\{]*{[^\}]*}[^\}]*)}{[^\}]*}.*?\\end{example}/<\/p><p><b>Example $1: <\/b> <a knowl="$1example.knowl">$2<\/a>\. &nbsp;\n <\/p>\n<p>/gs;
+}
+else{
+  $thetext =~ s/\\begin{example}{([^\}]*)}{([^\}]*)}{[^\}]*}/<\/p><p><b>Example $1: <\/b> $2\. &nbsp;\n /g;
+  $thetext =~ s/\\begin{example}{([^\}]*)}{([^\}\{]*{[^\}]*}[^\}]*)}{[^\}]*}/<\/p><p><b>Example $1: <\/b> $2\. &nbsp;\n <br>/g;
+  $thetext =~ s/\\end{example}/<\/p>\n<p>\n/g;
+}
+
+if($hideproofs){
+#  $thetext =~ s/\\begin{theorem}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{theorem\}\s+\%\s+\\begin{proof}(.+?)\\end{proof}/<\/p>\n<p>\n<b>Theorem $1<\/b>($2)  $3\n<\/p>\n<p><a knowl="$1theorem.proof.knowl">Proof<\/a>\.  &nbsp;\n <\/p>\n<p>/sg;
+  $thetext =~ s/\\begin{theorem}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{theorem\}.*?\\begin{proof}(.+?)\\end{proof}/<\/p>\n<p>\n<b>Theorem $1<\/b>&nbsp;($2)  $3\n<\/p>\n<p><a knowl="$1theorem.proof.knowl">Proof<\/a>\.  &nbsp;\n <\/p>\n<p>/sg;
+}
+else{
+  $thetext =~ s/\\begin{theorem}{([^\}]*)}{([^\}]*)}{[^\}]*}(.*?)\\end\{theorem\}/<\/p>\n<p>\n<b>Theorem $1<\/b>&nbsp;($2)  $3\n<\/p>\n/sg;
+  $thetext =~ s/\\begin{proof}/<p><b>Proof: <\/b>/g;
+  $thetext =~ s/\\end{proof}/<\/p>\n<p>\n /g;
+}
+
+# assume we hide archetypes.  Otherwise incorporate this into the above "hide" cases
+$thetext =~ s/\\archetypename{([A-Z])}.*?\\capsule{([^\}]*)}(.*?)\\newpage/<\/p>\n<p><a knowl="$1archetype.knowl">Archetype $1<\/a>\.  &nbsp;$2\n <\/p>\n<p>/sg; 
+$thetext =~ s/\\archetypename{([A-Z])}(.*?)\\newpage/<\/p>\n<p><a knowl="$1archetype.knowl">Archetype $1<\/a>\.  &nbsp;$2\n <\/p>\n<p>/sg; 
+
+$thetext=convertarchetypes($thetext);
+
+$thetext =~ s/\\determinant{(.*?)}}/<\/p>\n<div>\n&loz; archetypelineskip\n<\/div>\n<div>\$\\spn{$1}}\$<\/div>/g;
+
+
+$thetext =~ s/\\begin{enumerate}/<div>\n<ol>/g;
+$thetext =~ s/\\begin{itemize}/<div>\n<ul>/g;
+$thetext =~ s/\\end{enumerate}/<\/ol>\n<\/div>\n <p>\n/g;
+$thetext =~ s/\\end{itemize}/<\/ul>\n<\/div>\n <p>\n/g;
+$thetext =~ s/\\item /<li> /g;
+$thetext =~ s/\\item\\label{[^\}]*}/<li> /g;
+$thetext =~ s/\\item\\/<li> \\/g;
+
+$thetext =~ s/\\index{([^\{]*)}//g;
+$thetext =~ s/\\denote{([^\{]*)}{([^\{]*)}{([^\}\{]*)}{([^\}]*)}/<br>(This definition contains Notation $1.) /g;
+$thetext =~ s/\\denote{([^\{]*)}{([^\{]*)}{([^\{]*{[^\}\{]+?}[^\{]*)}{([^\{]*)}/ /g;
+$thetext =~ s/\\denote.*/ /g;   # ok if \denote always ends a line
+
+$thetext =~ s/\\par\s+/<\/p>\n<p>\n/g;
+$thetext =~ s/\\par\b/<\/p>\n<p>\n/g;
+$thetext =~ s/\\medskip//g;  # what is the correct html equivalent?
+
+$thetext =~ s/\\text{([^\}]*)\\acronymref{(theorem|definition|example|property|notation|denote|archetype)}{([^\}]*)}}/"\\text{"." $1 ".ucfirst($2)." $3}"/ge;
+
+$thetext =~ s/\\acronymref{(theorem|definition|example|property|denote|archetype)}{([^\}]*)}/'<a knowl="'.$2.$1.'.knowl">'.ucfirst($1).'&nbsp;'.$2.'<\/a>'/ge;
+$thetext =~ s/\\acronymref{(theorem|definition|example|property|denote|archetype)}{([^\}]*)}/'<a knowl="'.$2.$1.'.knowl">'.ucfirst($1).'&nbsp;'.$2.'<\/a>'/ge;
+$thetext =~ s/\\acronymref{(notation)}{([^\}]*)}/'<a knowl="'.$2.'denote.knowl">'.ucfirst($1).'&nbsp;'.$2.'<\/a>'/ge;
+# HACK.  We use an absolute reference because the knowls are in various subdirectories
+#$thetext =~ s/\\acronymref{(archetype)}{([^\}]*)}/ucfirst($1).'&nbsp;'.$2/ge;
+
+$thetext =~ s/\\acronymref{(chapter)}{([^\}]*)}/Chapter&nbsp;<a href="$2chapter.html"><em>$2:$chaptitle{$2}<\/em><\/a>/g;
+$thetext =~ s/\\acronymref{(section)}{([^\}]*)}/Section&nbsp;<a href="$2section.html"><em>$2:$sectitle{$2}<\/em><\/a>/g;
+$thetext =~ s/\\acronymref{(subsection)}{([^\}]*)\.([^\}]*)}/Subsection&nbsp;<a href="$2section.html#$3"><em>$2.$3:$sectitle{$2}:&nbsp;$subsectitle{$3}<\/em><\/a>/g;
+
+$thetext =~ s/\\diagram{([^\{]*)}{([^\{]*)}/<\/p><div><center><img src="$1.png"><br>$2<\/center><br><\/div><p>/g;
+
+$thetext =~ s/(\\begin{tabular}.*?\\end{tabular})/converttable($1)/gse;
+
+$thetext =~ s/\\acronymref{([^\}]*)}{([^\}]*)}/$1 $2/g;
+
+$thetext =~ s/\\intertext{([^\{]*)}/\\end{align*}\n$1\n\\begin{align*}\n/g;
+$thetext =~ s/\\intertext{([^\}\{]*{[^\}]*}[^\}\{]*)}/\\end{align*}\n$1\n\\begin{align*}\n/g;
+$thetext =~ s/\\intertext{([^\}\{]*{[^\}]*}[^\}\{]*{[^\}]*}[^\}\{]*)}/\\end{align*}\n$1\n\\begin{align*}\n/g;
+
+
+$thetext =~ s/\\archetypepart{([^\}]*)}{([^\}]*)}/archetypePART($1,$2)/ge;
+
+$thetext =~ s/\\begin{preformatted}\n*(.*?)\\end{preformatted}/"<\/p>\n<div><tt>\n".preformat($1)."\n<\/tt><br><\/div>\n"/seg;
+
+$thetext =~ s/\\begin{center}/\n<center>\n/g;
+$thetext =~ s/\\end{center}/\n<\/center>\n/g;
+$thetext =~ s/\\quad\b/&nbsp;&nbsp;&nbsp;/g;
+$thetext =~ s/\\begin{quote}/\n<blockquote>\n/g;
+$thetext =~ s/\\end{quote}/\n<\/blockquote>\n/g;
+$thetext =~ s/\\begin{flushright}/\n<\/p>\n<p align="right">\n/g;
+$thetext =~ s/\\end{flushright}/\n<\/p><p>\n/g;
+$thetext =~ s/\\property{[^\}]*}{[^\}]*}{[^\}]*}//g;
+$thetext =~ s/\\techniqueinline{[^\}]*}{[^\}]*}{[^\}]*}\n*{[^\}]*}\n*{[^\}]*}//g;
+#$thetext =~ s/\\computenote{[^\}]*}{[^\}]*}{[^\}]*}\n*{[^\}]*}\n*{[^\}]*}//g;
+# not good enough because the arguments have {arguments}
+
+$thetext =~ s/\\codeindent{.}//g;
+$thetext =~ s/\\ref{rref:columnloop}/2/g;
+$thetext =~ s/\\ref{rref:incrementrank}/5/g;
+$thetext =~ s/\\ref{rref:swap}/6/g;
+$thetext =~ s/\\ref{rref:normalize}/7/g;
+$thetext =~ s/\\ref{rref:zeroout}/8/g;
+
+$thetext =~ s/i\.e\.\\ /i.e.&nbsp;/g;
+$thetext =~ s/\\TeX\\/TeX/g;
+$thetext =~ s/\\LaTeX\\/LaTeX/g;
+$thetext =~ s/\\LaTeX\b/LaTeX/g;
+$thetext =~ s/\\TeX\b/TeX/g;
+$thetext =~ s/e\.g\.\\ /i.e.&nbsp;/g;
+$thetext =~ s/\.\\ /.&nbsp;/g;
+$thetext =~ s/{\\em +([^\{]*)}([ ,\.\;:])/<em>$1<\/em>$2/g;
+$thetext =~ s/\\emph{([^\{]*)}/<em>$1<\/em>/g;
+$thetext =~ s/\\url{([^\{]*)}/<tt>$1<\/tt>/g;
+$thetext =~ s/{\\bf ([0-9a-zA-Z &;]+)}([ ,\.\;:])/<b>$1<\/b>$2/g;
+$thetext =~ s/{\\it ([0-9a-zA-Z &;]+)}([ ,\.\;:])/ <em>$1<\/em>$2/g;
+$thetext =~ s/{\\tt ([0-9a-zA-Z &;]+)}([ ,\.\;:])/ <tt>$1<\/tt>$2/g;
+$thetext =~ s/{\\sl ([0-9a-zA-Z &;]+)}([ ,\.\;:])/ <em>$1<\/em>$2/g;
+$thetext =~ s/\\paragraph{([a-zA-Z ]+)}/\n<\/p>\n<p><b>$1.<\/b>&nbsp;&nbsp;/g;
+$thetext =~ s/\~/&nbsp;/g;
+$thetext =~ s/\\linebreak/<br>/g;
+$thetext =~ s/\\archetypelineskip/<br>/g;
+$thetext =~ s/\\archetypeentryskip/<br>/g;
+
+return($thetext)
+
+}
+
+###########################################################
+
+sub preformat {
+
+my $txt=shift;
+
+$txt =~ s/  /&nbsp;&nbsp;/g;
+$txt =~ s/\n/<br>\n/g;
+
+return($txt)
+
+}
+
+###########################################################
+
+sub converttable {
+
+my $thetable = shift;
+
+$thetable =~ s/\\begin{tabular}{.*?}}/<table>\n<tr><td>/;
+$thetable =~ s/&/<\/td><td>/g;
+$thetable =~ s/\\\\/<\/td><\/tr><tr><td>/g;
+$thetable =~ s/\\end{tabular}/<\/td><\/tr><\/table>/;
+$thetable =~ s/\\hline/<td scope="col" colspan="5"><hr><\/td><\/tr><tr><td>/g;
+
+$thetable =~ s/\\\$/&dollar;/g;
+
+return($thetable)
+
+}
+
+###########################################################
+
+sub convertarchetypes {
+
+my $thetext = shift;
+
+#processing ARCHETYPES
+$thetext =~ s/\\systemequations{(.*?)}}/<\/p>\n<div>\n&loz; A system of linear equations (\\acronymref{definition}{SLE}):<\/div>\n<div>\n$1}<\/div>/g;
+$thetext =~ s/\\specificsolutions{([^\}]*)}/<\/p>\n<div>\n&loz; Some solutions to the system of linear equations (not necessarily exhaustive):\\archetypelineskip\n$1\n<\/div>/g;
+$thetext =~ s/\\augmentedmatrixrepresentation{(.*?)}}/<\/p>\n<div>\n&loz; Augmented matrix of the linear system of equations  (\\acronymref{definition}{AM}):\n<\/div>\n<div>\n$1}<\/div>/g;
+$thetext =~ s/\\augmentedmatrixreduced{(.*?)}}/<\/p>\n<div>\n&loz; Matrix in reduced row-echelon form, row-equivalent to augmented matrix:\n<\/div>\n<div>\n$1}<\/div>/g;
+$thetext =~ s/\\systemmatrixanalysis{([^\}]*?)}{([^\}]*?)}{([^\}]*?)}/<\/p>\n<div>\n&loz; Analysis of the augmented matrix (\\acronymref{notation}{RREFA}):\n\\begin{align*}
+r=$1&&D=\\set{$2}&&F=\\set{$3}
+\\end{align*}
+<\/div>/g;
+$thetext =~ s/\\vectorformgeneral{([^\}]*)}\n/<\/p>\n<div>\n&loz; Vector form of the solution set to the system of equations (\\acronymref{theorem}{VFSLS}).  Notice the relationship between the free variables and the set \$F\$ above.   Also, notice the pattern of 0's and 1's in the entries of the vectors corresponding to elements of the set \$F\$ for the larger examples.\\archetypelineskip\n$1<\/div>/sg;
+$thetext =~ s/\\vectorformgeneral{(.*?)\n}\n/<\/p>\n<div>\n&loz; Vector form of the solution set to the system of equations (\\acronymref{theorem}{VFSLS}).  Notice the relationship between the free variables and the set \$F\$ above.   Also, notice the pattern of 0's and 1's in the entries of the vectors corresponding to elements of the set \$F\$ for the larger examples.\\archetypelineskip\n$1<\/div>/sg;
+$thetext =~ s/\\homogenoussystem{(.*?)}}/<\/p>\n<div>\n&loz;  Given a system of equations we can always build a new, related,
+homogeneous system (\\acronymref{definition}{HS}) by converting the constant terms to zeros and retaining the coefficients of the variables.  Properties of this new system will have precise relationships with various properties of the original system.
+\n<\/div>\n<div>\n$1}<\/div>/g;
+$thetext =~ s/\\specifichomosolutions{([^\}]*)}/<\/p>\n<div>\n&loz; Some solutions to the associated homogenous system of linear equations (not necessarily exhaustive):\\archetypelineskip\n$1\n<\/div>/sg;
+$thetext =~ s/\\homogenousmatrixreduced{(.*?})}/<\/p>\n<div>\n&loz; Form the augmented matrix of the homogenous linear system, and use row operations to convert to reduced row-echelon form.  Notice how the entries of the final column remain zeros:\n<\/div>\n<div>\n$1<\/div>/g;
+$thetext =~ s/\\homomatrixanalysis{([^\}]*?)}{([^\}]*?)}{([^\}]*?)}/<\/p>\n<div>\n&loz; Analysis of the augmented matrix for the
+homogenous system (\\acronymref{notation}{RREFA}).  Notice the slight variation for the same analysis of the original system only when the original system was consistent:\n\\begin{align*}
+r=$1&&D=\\set{$2}&&F=\\set{$3}
+\\end{align*}
+\\archetypelineskip<\/div>/g;
+$thetext =~ s/\\coefficientmatrix{(.*?)}}/<\/p>\n<div>\n&loz; Coefficient matrix of original system of equations, and of associated homogenous system.  This matrix will be the subject of further analysis, rather than the systems of equations.\n<\/div>\n<div>\n$1}<\/div>/g;
+$thetext =~ s/\\matrixreduced{(.*?)}}/<\/p>\n<div>\n&loz; Matrix brought to reduced row-echelon form:\n<\/div>\n<div>\n$1}<\/div>/g;
+$thetext =~ s/\\matrixanalysis{([^\}]*?)}{([^\}]*?)}{([^\}]*?)}/<\/p>\n<div>\n&loz;  Analysis of the row-reduced matrix (\\acronymref{notation}{RREFA}):\n\\begin{align*}
+r=$1&&D=\\set{$2}&&F=\\set{$3}
+\\end{align*}
+\\archetypelineskip<\/div>/g;
+$thetext =~ s/\\nullspace{(.*?)}}/<\/p>\n<div>\n&loz; This is the null space of the matrix.  The set of vectors used in the span construction is a linearly independent set of column vectors that spans the null space of the matrix (\\acronymref{theorem}{SSNS}, \\acronymref{theorem}{BNS}).  Solve the homogenous system with this matrix as the coefficient matrix and write the solutions in vector form (\\acronymref{theorem}{VFSLS}) to see these vectors arise.\\archetypelineskip\n<\/div>\n<div>\$\\spn{$1}}\$<\/div>/g;
+$thetext =~ s/\\rangeoriginal{(.*?)}}/<\/p>\n<div>\n&loz; Column space of the matrix, expressed as the span of a set of linearly independent vectors that are also columns of the matrix.  These columns have indices that form the set \$D\$ above.  (\\acronymref{theorem}{BCS}) \\archetypelineskip\n<\/div>\n<div>\$\\spn{$1}}\$<\/div>/g;
+$thetext =~ s/\\rangenull{(.*?)}}{(\\arch.*?)}}/<\/p>\n<div>\n&loz; The column space of the matrix, as it arises from the extended echelon form of the matrix.  The matrix \$L\$ is computed as described in \\acronymref{definition}{EEF}.  This is followed by the column space described by a set of linearly independent vectors that span the null space of \$L\$, computed as according to \\acronymref{theorem}{FS} and \\acronymref{theorem}{BNS}.  When \$r=m\$, the matrix \$L\$ has no rows and the column space is all of \$\\complex{m}\$. \\archetypelineskip\n<\/div>
+<div>\$L=\\begin{bmatrix}$1}\\end{bmatrix}\$\\archetypelineskip\$\\spn{$2}}\$<\/div>/g;
+$thetext =~ s/\\rangenull{(.*?)}{(\\arch.*?)}}/<\/p>\n<div>\n&loz; The column space of the matrix, as it arises from the extended echelon form of the matrix.  The matrix \$L\$ is computed as described in \\acronymref{definition}{EEF}.  This is followed by the column space described by a set of linearly independent vectors that span the null space of \$L\$, computed as according to \\acronymref{theorem}{FS} and \\acronymref{theorem}{BNS}.  When \$r=m\$, the matrix \$L\$ has no rows and the column space is all of \$\\complex{m}\$. \\archetypelineskip\n<\/div>\n<div>\$L=\\begin{bmatrix}$1\\end{bmatrix}\$\\archetypelineskip\$\\spn{$2}}\$<\/div>/g;
+$thetext =~ s/\\rangenull{(.*?)}\n{(\\arche.*?)}}/<\/p>\n<div>\n&loz; The column space of the matrix, as it arises from the extended echelon form of the matrix.  The matrix \$L\$ is computed as described in \\acronymref{definition}{EEF}.  This is followed by the column space described by a set of linearly independent vectors that span the null space of \$L\$, computed as according to \\acronymref{theorem}{FS} and \\acronymref{theorem}{BNS}.  When \$r=m\$, the matrix \$L\$ has no rows and the column space is all of \$\\complex{m}\$. \\archetypelineskip\n<\/div>\n<div>\$L=\\begin{bmatrix}$1\\end{bmatrix}\$\\archetypelineskip\$\\spn{$2}}\$<\/div>/sg;
+
+$thetext =~ s/\\rangereduce{(.*?)}}/<\/p>\n<div>\n&loz; Column space of the matrix, expressed as the span of a set of linearly independent vectors.  These vectors are computed by row-reducing the transpose of the matrix into reduced row-echelon form, tossing out the zero rows, and writing the remaining nonzero rows as column vectors.  By \\acronymref{theorem}{CSRST} and \\acronymref{theorem}{BRS}, and in the style of \\acronymref{example}{CSROI}, this yields a linearly independent set of vectors that span the column space.\\archetypelineskip\n<\/div>\n<div>\$\\spn{$1}}\$<\/div>/g;
+$thetext =~ s/\\rowspace{(.*?)}}/<\/p>\n<div>\n&loz; Row space of the matrix, expressed as a span of a set of linearly independent vectors, obtained from the nonzero rows of the equivalent matrix in reduced row-echelon form.  (\\acronymref{theorem}{BRS})\\archetypelineskip\n<\/div>\n<div>\$\\spn{$1}}\$<\/div>/g;
+$thetext =~ s/\\dimensions{([^\}]*?)}{([^\}]*?)}{([^\}]*?)}/<\/p>\n<div>\n&loz;  Subspace dimensions associated with the matrix. (\\acronymref{definition}{NOM}, \\acronymref{definition}{ROM})  Verify \\acronymref{theorem}{RPNC}.\n\\begin{align*}
+\\text{Matrix columns: }$1&&
+\\text{Rank: }$2&&
+\\text{Nullity: }$3
+\\end{align*}
+\\archetypelineskip<\/div>/g;
+$thetext =~ s/\\determinant{(.*?)}/<\/p>\n<div>\n&loz; Determinant of the matrix, which is only defined for square matrices.   The matrix is nonsingular if and only if the determinant is nonzero (\\acronymref{theorem}{SMZD}).   The determinant is the product of all eigenvalues.  \\archetypelineskip\n<\/div>\n<p>\$\\text{Determinant} = $1\$<\/p>/g;
+$thetext =~ s/\\spectrum{(.*?)}}/<\/p>\n<div>\n&loz; Eigenvalues, and bases for eigenspaces.
+(\\acronymref{definition}{EEM},\\acronymref{definition}{EM}) \\archetypelineskip\n<\/div>\n<div>
+\\begin{align*}
+$1}
+\\end{align*}<\/div>/g;
+$thetext =~ s/\\matrixnonsingular{(.*?)}/<\/p>\n<div>\n&loz;  Matrix (coefficient matrix) is nonsingular or singular? (\\acronymref{theorem}{NMRRI})  at the same time, examine the size of the set \$F\$ above. Note that this property does not apply to matrices that are not square. \\archetypelineskip\n<\/div>\n<p>$1<\/p>/g;
+$thetext =~ s/\\multiplicities{([^\%]*)\n}\n/<\/p>\n<div>\n&loz; Geometric and algebraic multiplicities.
+(\\acronymref{definition}{GME}\\acronymref{definition}{AME})\\archetypelineskip
+\\begin{align*}
+$1
+\\end{align*}<\/div>/sg;
+$thetext =~ s/\\matrixinverse{(\\null|.*?})}/<\/p>\n<div>\n&loz; Inverse matrix, if it exists.  The inverse is not defined for matrices that are not square, and if the matrix is square, then the matrix must be nonsingular. (\\acronymref{definition}{MI}, \\acronymref{theorem}{NI})\\archetypelineskip\n<\/div>\n<div>\$$1\$<\/div>/g;
+$thetext =~ s/\\diagonalizable{(.*)}/<\/p>\n<div>\n&loz;  Diagonalizable?  (\\acronymref{definition}{DZM}) \\archetypelineskip\n<\/div>\n<div>$1<\/div>/g;
+$thetext =~ s/\\diagonalization\s*{(.*?})}\s*{(.*?})}\s*{(.*?})}\s*{(.*?})}/<\/p>\n<div>\n&loz;  The diagonalization.  (\\acronymref{theorem}{DC}) \n\\begin{align*}
+$1$2$3 &=$4
+\\end{align*}
+\\archetypelineskip<\/div>/sg;
+$thetext =~ s/\\purematrix{(.*?})}/<\/p>\n<div>\n&loz; A matrix:\\archetypelineskip\n<\/div>\n<div>A matrix:
+\\begin{flalign*}
+$1&&
+\\end{flalign*}<\/div>/g;
+
+$thetext =~ s/\\lintransformation{(.*?})}/<\/p>\n<div>\n&loz;  A linear transformation: (\\acronymref{definition}{LT})\n<\/div>\n<div>
+\\begin{equation*}
+$1
+\\end{equation*}
+<\/div>/g;
+$thetext =~ s/\\ltnullspace{(.*?})}/<\/p>\n<div>\n&loz;  A basis for the null space of the linear transformation: (\\acronymref{definition}{KLT})\n<\/div>\n<div>
+\\begin{equation*}
+$1
+\\end{equation*}
+<\/div>/g;
+
+$thetext =~ s/\\surjective{(Yes|No)}\n{(.*?)} *\n%\n/<\/p>\n<div>\n&loz;   Surjective: $1. (\\acronymref{definition}{SLT})\\archetypelineskip<\/div>
+<div>
+$2
+<\/div>/sg;
+$thetext =~ s/\\injective{(Yes|No)}\n{(.*?\.\n*)} *\n\%\n/<\/p>\n<div>\n&loz;   Injective: $1. (\\acronymref{definition}{ILT})\\archetypelineskip<\/div>
+<div>
+$2
+<\/div>/sg;
+$thetext =~ s/\\injective{(Yes|No)}\n{(.*?)\n} *\n\%\n/<\/p>\n<div>\n&loz;   Injective: $1. (\\acronymref{definition}{ILT})\\archetypelineskip<\/div>
+<div>
+$2
+<\/div>/sg;
+
+$thetext =~ s/\\ltrange\n*{(.*?)}\n{(\\arche.*?ltrangebasis})}/<\/p>\n<div>\n&loz;   A basis for the range of the linear transformation:  (\\acronymref{definition}{RLT})\\archetypelineskip
+Evaluate the linear transformation on a standard basis to get a spanning set for the range (\\acronymref{theorem}{SSRLT}):
+<\/div>
+<div>
+\\begin{equation*}
+$1
+\\end{equation*}
+<\/div>
+<div>
+If the linear transformation is injective, then the set above is guaranteed to be linearly independent (\\acronymref{theorem}{ILTLI}).   This spanning set may be converted to a ``nice'' basis, by making the vectors the rows of a matrix (perhaps after using a vector reperesentation), row-reducing, and retaining the nonzero rows (\\acronymref{theorem}{BRS}), and perhaps un-coordinatizing.  A basis for the range is:
+<\/div>
+<div>
+\\begin{equation*}
+$2
+\\end{equation*}
+<\/div>
+/sg;
+
+$thetext =~ s/\\ltdimensions{([^}]*?)}{([^}]*?)}{([^}]*?)}/<\/p>\n<div>\n&loz;  Subspace dimensions associated with 
+the linear transformation.  Examine parallels with earlier results for matrices.  Verify \\acronymref{theorem}{RPNDD}.
+\\begin{align*}
+\\text{Domain dimension: }$1&&
+\\text{Rank: }$2&&
+\\text{Nullity: }$3
+\\end{align*}
+/g;
+ 
+$thetext =~ s/\\invertible{(Yes|No)}{(.*?)}\n%\n/<\/p>\n<p>\n&loz;  Invertible: $1. <\/p>\\archetypelineskip
+<p>
+$2
+<\/p>
+/g;
+
+$thetext =~ s/\\ltmatrixrepresentation\n*{(.*?)}\n{(.*?)}\n%\n/<\/p>\n<p>\n&loz;  Matrix representation (\\acronymref{theorem}{MLTCV}): <\/p>\\archetypelineskip
+<div>
+\\begin{equation*}
+$1,\\quad A=$2
+\\end{equation*}
+<\/div>
+/g;
+
+$thetext =~ s/\\ltmatrixrepresentationftmr\n*{(.*?)}\n{(.*?)}\n{(\\arche.*?})}\n%\n/<\/p>\n<p>\n&loz;  Matrix representation (\\acronymref{definition}{MR}): <\/p>\\archetypelineskip
+<div>
+\\begin{align*}
+B&=$1\\\\
+&\\\\
+C&=$2\\\\
+&\\\\
+\\matrixrep{T}{B}{C}&=$3
+\\end{align*}
+<\/div>
+/sg;
+$thetext =~ s/\\ltspectrum{(.*?})}\n%\n/<\/p>\n<p>\n&loz;   Eigenvalues and eigenvectors (\\acronymref{definition}{EELT}, \\acronymref{theorem}{EER}):<\/p>
+<div>
+\\begin{align*}
+$1
+\\end{align*}
+<\/div>
+/g;
+
+$thetext =~ s/\\diagonalmatrixrepresentation\n*{(.*?)}\n{\n(.*?)}\n%\n/<\/p>\n<p>\n&loz;  A diagonal matrix representation relative to a basis of eigenvectors, \$B\$.
+\\begin{align*}
+B&=$1\\\\
+&\\\\
+\\matrixrep{T}{B}{B}&=$2
+\\end{align*}
+/sg;
+$thetext =~ s/\\ltinversetransformation{(.*?)}\n%\n/<\/p>\n<p>\n&loz;   The inverse linear transformation (\\acronymref{definition}{IVLT}):<\/p>
+<div>
+\\begin{equation*}
+$1
+\\end{equation*}
+<\/div>
+/sg;
+$thetext =~ s/\\inverselineartransformation{(.*?)}\n%\n/<\/p>\n<p>\n&loz; Since invertible, the inverse is also a linear transformation.  (\\acronymref{definition}{IVLT}):<\/p>
+<div>
+\\begin{equation*}
+$1
+\\end{equation*}
+<\/div>
+/sg;
+
+
+
+return($thetext)
+}
+
+###########################################################
+sub upperc {
+
+my $word=shift;
+
+$word =~ s/([a-zA-Z])/uc($1)/e;
+
+print($1,uc($1));
+
+return($word)
+
+}
+###########################################################
+sub archetypePART {
+
+my $letter=shift;
+my $type = shift;
+
+my $ans = "xxxx".$letter."yyyy".$type."zzzz";
+
+my $file = $inputdirectory."/archetypes/".$letter."/".$letter."-".$type.".tex";
+
+{
+  local $/=undef;
+  open ARCHFILE,  "$file"  or die "Couldn't open $file file: $!";
+  $archcontents = <ARCHFILE>;
+  close ARCHFILE;
+}
+
+$archcontents =~ s/%%%%.*//g;
+return($archcontents)
+
+}
+
+###########################################################
+
+sub extracttopmatter {
+
+my $webpage=shift;
+
+$webpage =~ /.*?<\/table>.(.+?)<table/s;
+
+my $topmatter=$1;
+
+$topmatter =~ s/<table class=\"infobox.*?<\/table>//;
+
+return($topmatter)
+
+}
+
+###########################################################
+
+sub coauthors {  # this may not work properly
+
+my $webpage=shift;
+my $MRCODE=shift;
+my @lines=split(/\n/,$webpage);
+my $authors="";
+my $coauthorQ;
+
+foreach my $line (@lines) {
+
+if(($line =~ m/s1=[0-9]{4,}/) && !($line =~ m/Reviewed/)) {
+  
+    while($line =~ m/s1=[0-9]{4,}[^ ]*?\>([A-Z][a-zA-Z, \-\.]+)\</) {
+		$line =~ s/s1=([0-9]{4,})[^ ]*?\>([A-Z][a-zA-Z, \-\.]+)\<//;
+		$coauthorQ=$2;
+		if( ($1 ne $MRCODE) && ($authors !~ /$coauthorQ/) ) {$authors.=$coauthorQ."; "}
+	}
+
+}
+
+}
+
+return($authors);
+
+}
+
+#############################33
+
+sub striplinks {
+
+my $webpage=shift;
+
+$webpage =~ s/<a [^>]*>/ /g;
+
+return($webpage);
+
+}
+
+###############################################
+
+sub extractMRcodes {
+
+my $webpage=shift;
+my $MRCODELIST="";
+my $newcodeQ;
+
+while($webpage =~ m/\b([0-9]{2}[A-Z][0-9]{2})\b/ ) {
+
+	$webpage =~ s/\b([0-9]{2}[A-Z][0-9]{2})\b//s;
+	$newcodeQ=$1;
+	if( $MRCODELIST !~ /$newcodeQ/ ) {$MRCODELIST.=$newcodeQ." "} 
+
+}
+
+#$webpage =~ s/^.*<body>//s;  #also matsh newline
+#$webpage =~ s/^.?<\/table>//s;
+
+return($MRCODELIST);
+
+}
+
+###############################################
+
+sub header {
+
+my $type=shift || "";
+my $title=shift || "";
+my $chaptag=shift || "";
+my $sectag=shift || "";
+
+$myheader= qq@<!DOCTYPE HTML>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=Edge,chrome=1">
+<meta http-equiv="Content-Language" Content="en">
+<title>$title</title>
+<link href="http://aimath.org/beezer.css" rel="stylesheet" type="text/css" />
+<link href="http://aimath.org/knowlstyle.css" rel="stylesheet" type="text/css" /> 
+
+
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  extensions: ["tex2jax.js","TeX/AMSmath.js","TeX/AMSsymbols.js"],
+  jax: ["input/TeX","output/HTML-CSS"],
+  tex2jax: {
+    inlineMath: [['\$','\$'],["\\\\(","\\\\)"]],
+    processEscapes: true,
+  },
+TeX: {
+   Macros: {
+    denote: ["",4],
+    null: "",
+    sb: "_",
+    leading: ["\\\\fbox{#1}",1],
+    rref: "\\\\xrightarrow{\\\\text{RREF}}",
+    rowopswap: ["R_{#1} \\\\leftrightarrow R_{#2}",2],
+    rowopmult: ["#1 R_{#2}",2],
+    rowopadd: ["#1 R_{#2} + R_{#3}",3],
+    compose: ["#1 \\\\circ #2",2],
+    inverse: ["#1\^{-1}",1],
+    setcomplement: ["\\\\overline{#1}",1],
+    ltinverse: ["#1\^{-1}",1],
+    preimage: ["#1\^{-1}\\\\left(#2\\\\right)",2],
+    lt: ["#1\\\\left(#2\\\\right)",2],
+    transpose: ["#1\^{t}",1],
+    adjoint: ["#1\^{\\\\ast}",1],
+    adj: ["\\\\transpose{\\\\left(\\\\conjugate{#1}\\\\right)}",1],
+    similar: ["\\\\inverse{#2}#1#2",2],
+    detname: ["\\\\det\\\\left(#1\\\\right)",1],
+    dimension: ["\\\\dim\\\\left(#1\\\\right)",1],
+    colvector: ["\\\\begin{bmatrix}#1\\\\end{bmatrix}",1],
+    vslt: ["{\\\\mathcal LT}\\\\left(#1,#2\\\\right)",2],
+    lns: ["{\\\\mathcal L}\\\\left(#1\\\\right)",1],
+    nsp: ["{\\\\mathcal N}\\\\left(#1\\\\right)",1],
+    csp: ["{\\\\mathcal C}\\\\left(#1\\\\right)",1],
+    rsp: ["{\\\\mathcal R}\\\\left(#1\\\\right)",1],
+    rng: ["{\\\\mathcal R}\\\\left(#1\\\\right)",1],
+    krn: ["{\\\\mathcal K}\\\\left(#1\\\\right)",1],
+    vectrepname: ["\\\\rho_{#1}",1],
+    vectrep: ["\\\\lt{\\\\vectrepname{#1}}{#2}",2],
+    vectrepinvname: ["\\\\ltinverse{\\\\vectrepname{#1}}",1],
+    vectrepinv: ["\\\\lt{\\\\ltinverse{\\\\vectrepname{#1}}}{#2}",2],
+    matrixrepcolumns: ["\\\\left\\\\lbrack \\\\left.\\\\vectrep{#2}{\\\\lt{#1}{\\\\vect{#3}\\\\sb{1}}}\\\\right| \\\\left.\\\\vectrep{#2}{\\\\lt{#1}{\\\\vect{#3}\\\\sb{2}}}\\\\right| \\\\left.\\\\vectrep{#2}{\\\\lt{#1}{\\\\vect{#3}\\\\sb{3}}}\\\\right| \\\\ldots \\\\left|\\\\vectrep{#2}{\\\\lt{#1}{\\\\vect{#3}\\\\sb{#4}}}\\\\right.  \\\\right\\\\rbrack",4],
+    matrixrep: ["M^{#1}_{#2,#3}",3],
+    cbm: ["C_{#1,#2}",2],
+    jordan: ["J_{#1}\\\\left(#2\\\\right)",2],
+    restrict: ["{#1}|\\\\sb{#2}",2],
+    indx: ["\\\\iota_{#1}|\\\\left(#2\\\\right)",2],
+    rank: ["r\\\\left(#1\\\\right)",1],
+    nullity: ["n\\\\left(#1\\\\right)",1],
+    eigenspace: ["{\\\\mathcal E}_{#1}\\\\left(#2\\\\right)",2],
+    eigensystem: ["\\\\lambda\&=#2\&\\\\eigenspace{#1}{#2}\&=\\\\spn{\\\\set{#3}}",3],
+    geneigenspace: ["{\\\\mathcal G}_{#1}\\\\left(#2\\\\right)",2],
+    innerproduct: ["\\\\FCLAlangle#1,#2\\\\FCLArangle",2],
+    spn: ["\\\\FCLAlangle#1\\\\FCLArangle",1],
+    card: ["\\\\FCLAlvert#1\\\\FCLArvert",1],
+    detbars: ["\\\\FCLAlvert#1\\\\FCLArvert",1],
+    modulus: ["\\\\FCLAlvert#1\\\\FCLArvert",1],
+    norm: ["\\\\FCLAlVert#1\\\\FCLArVert",1],
+    matrixentry: ["\\\\FCLAlbrack#1\\\\FCLArbrack_{#2}",2],
+    vectorentry: ["\\\\FCLAlbrack#1\\\\FCLArbrack_{#2}",2],
+    matrixcolumns: ["\\\\left\\\\lbrack\\\\vect{#1}_{1}|\\\\vect{#1}_{2}|\\\\vect{#1}_{3}|\\\\ldots|\\\\vect{#1}_{#2}\\\\right\\\\rbrack",2],
+    vectorlist: ["\\\\vect{#1}_{1}, \\\\vect{#1}_{2}, \\\\vect{#1}_{3}, \\\\ldots, \\\\vect{#1}_{#2}",2],
+    scalarlist: ["{#1}_{1}, {#1}_{2}, {#1}_{3}, \\\\ldots, {#1}_{#2}",2],
+    set: ["\\\\FCLAlsetbrack#1\\\\FCLArsetbrack",1],
+    setparts: ["\\\\FCLAlsetbrack\\\\FCLAlnull #1 \\\\quad  \\\\FCLArvert \\\\quad   #2 \\\\FCLArsetbrack",2],
+    algmult: ["\\\\alpha_{#1}\\\\left(#2\\\\right)",2],
+    geomult: ["\\\\gamma_{#1}\\\\left(#2\\\\right)",2],
+    charpoly: ["p_{#1}\\\\left(#2\\\\right)",2],
+    augmented: ["\\\\FCLAlbrack\\\\FCLAlnull#1\\\\FCLArvert#2\\\\FCLArbrack",2],
+    linearsystem: ["{\\\\mathcal L}{\\\\mathcal S}\\\\left(#1,#2\\\\right)",2],
+    homosystem: ["\\\\linearsystem{#1}{\\\\zerovector}",1],
+    lincombo: ["#1_{1}\\\\vect{#2}_{1}+#1_{2}\\\\vect{#2}_{2}+#1_{3}\\\\vect{#2}_{3}+\\\\cdots +#1_{#3}\\\\vect{#2}_{#3}",3],
+    submatrix: ["#1\\\\left(#2|#3\\\\right)",3],
+    elemswap: ["E_{#1,#2}",2],
+    elemmult: ["E_{#2}\\\\left(#1\\\\right)",2],
+    elemadd: ["E_{#2,#3}\\\\left(#1\\\\right)",3],
+    ltdefn: ["#1 : #2 \\\\rightarrow #3",3],
+    zerovector: "\\\\vect{0}",
+    zeromatrix: "{\\\\mathcal 0}",
+    vect: ["{\\\\bf #1}",1],
+    conjugate: ["\\\\overline{#1}",1],
+    ds: "\\\\oplus",
+    isomorphic: "\\\\cong",
+    complexes: "{\\\\mathbb C}",
+    complex: ["{\\\\mathbb C}^{#1}",1],
+    real: ["{\\\\mathbb R}^{#1}",1],
+    FCLAlangle: "\\\\left\\\\langle",
+    FCLArangle: "\\\\right\\\\rangle",
+    FCLAlbrack: "\\\\left\\\\lbrack",
+    FCLArbrack: "\\\\right\\\\rbrack",
+    FCLAlvert: "\\\\left\\\\lvert",
+    FCLArvert: "\\\\right\\\\rvert",
+    FCLAlVert: "\\\\left\\\\lVert",
+    FCLArVert: "\\\\right\\\\rVert",
+    FCLAlnull: "\\\\left.",
+    FCLArnull: "\\\\right.",
+    FCLAlsetbrack: "\\\\left\\\\{",
+    FCLArsetbrack: "\\\\right\\\\}",
+    intertext: ["\\\\\\\\ \\\\text{#1}\\\\\\\\ ",1],
+
+   }
+},
+  "HTML-CSS": { scale: 85 },
+  menuSettings: { zscale: "150\%", zoom: "Double-Click" }
+});
+</script>
+
+<script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js"></script>
+
+<script type="text/javascript" src="http://code.jquery.com/jquery-latest.min.js"></script> 
+<script type="text/javascript" src="http://aimath.org/knowl.js"></script>
+
+</head>
+
+<body class="">
+<div id="header">
+    <div id="logo">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<a href="."><img src="http://aimath.org/images/beezer_cover_h120.jpg" /></a></div>
+    <div class="right">@;
+
+$myheader .= breadcrumbs($type,$chaptag,$sectag);
+
+$myheader .=qq@       <div id="title"><span id="title-content">$title</span></div>
+    </div>
+</div>
+@;
+
+return($myheader)
+
+#<script type="text/javascript" src="http://l-functions.org/static/jquery.min.js"></script>
+#<script type="text/javascript" src="http://l-functions.org/static/jquery.watermark.min.js"></script>
+#<script type="text/javascript" src="http://l-functions.org/static/lmfdb.js"></script>
+#<script type="text/javascript" src="http://l-functions.org/static/showdown.min.js"></script>
+#
+#<script type="text/javascript" src="http://l-functions.org/static/jquery.dataTables.js"></script>
+#<script type="text/javascript" src="http://l-functions.org/static/jquery.dataTables.plugins.js"></script>
+#<script type="text/javascript" src="http://l-functions.org/static/jquery-ui-1.8.14.custom.min.js"></script>
+#<script type="text/javascript" src="https://www.google.com/jsapi"></script>
+#
+#<link rel="stylesheet" href="http://l-functions.org/static/jquery-ui-1.8.14.custom.css" type="text/css"/>
+
+}
+
+##############################################
+
+##############################################
+sub breadcrumbs {
+
+my $type=shift || "";  
+my $chap=shift || "";  
+my $sect=shift || "";  
+my $chapfile=$chap."chapter.html";
+my $sectfile=$sect."section.html";
+
+my $chaptitle;
+if($type eq "chapter") { $chaptitle=$chaptitle{$chap}}
+elsif($type eq "section") {$chaptitle=$chaptitle{$chap};  $sectitle = $sectitle{$sect}}
+elsif($type eq "appendix") { $chaptitle = $appdxtitle{$chap}; $chapfile=$chap."chapter.html"}
+elsif($type eq "archetype") { $chaptitle="Archetypes"; $sectitle = "Archetype ".$sect; $chapfile=$chap."chapter.html"; $sectfile=$sect."archetype.html"}
+elsif($type eq "frontmatter") { $chaptitle = $chaptitle{$chap}; $chapfile=$chap.".html"}
+
+my $breadcrumbs=
+qq|       <div class="bread">
+                  <a href=".">Home</a>
+                    &raquo;<a href="$chapfile">$chaptitle</a>|;
+
+if($sect) {
+$breadcrumbs .= qq|&raquo; <a href="$sectfile">$sectitle</a>|;
+}
+
+$breadcrumbs .= qq|        </div>|;
+
+return($breadcrumbs)
+
+}
+###############################################
+
+sub footer {
+
+$myfooter = qq|</body>\n</html>\n|;
+
+return($myfooter);
+
+}
+
+###############################################
+
+sub titlepage {
+
+my $titlepage=qq|
+
+<center>
+<h1>A First Course in Linear Algebra</h1>
+
+by
+<h2>
+Robert A. Beezer
+</h2>
+<h3>
+Department of Mathematics and Computer Science
+<br>
+University of Puget Sound
+</h3>
+
+Version 2.30
+
+</center>
+
+<div>
+&nbsp;
+<br>
+&nbsp;
+<br>
+&nbsp;
+<br>
+© 2004 by Robert A. Beezer.
+<br>
+Permission is granted to copy, distribute and/or modify this document under the terms of the GNU Free Documentation License, Version 1.2 or any later version published by the Free Software Foundation; with no Invariant Sections, no Front-Cover Texts, and no Back-Cover Texts. A copy of the license is included in the appendix entitled “GNU Free Documentation License”.
+</div>
+<div>
+&nbsp;
+<br>
+The most recent version of this work can always be found at <a href="http://linear.ups.edu/">http://linear.ups.edu/</a>.
+</div>
+
+|;
+
+return($titlepage)
+
+}
+###############################################
+
+
+###############################################
