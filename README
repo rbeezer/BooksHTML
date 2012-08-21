@@ -1,0 +1,28 @@
+
+The purpose of this project is to produce HTML versions
+of textbooks that look good in a browser and on an iPad,
+and which make better use of the capabilities of the web.
+This involves:
+
+1) A script which converts the author's source files (which
+are written in LaTeX) to HTML.
+
+2) Knowls and other enhancements, automatically generated
+from the LaTeX source.
+
+3) CSS to make it look good.
+
+The initial focus is on Beezer's Linear Algebra,
+Guichard's Calculus, and Judson's Abstract Algebra.
+
+Because of differences in the structure of the underlying LaTeX
+sources, each book will require different conversion scripts, at
+least initially.  One outcome of this project should be best
+practices for structuring the underlying LaTeX.  Then the
+sources of each book can be refactored and processed
+from a common script.
+
+Even with separate conversion scripts, one CSS should work
+for all three books.  The similar apearance of the three books
+will bring attention to this project.
+
