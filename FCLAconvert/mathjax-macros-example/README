@@ -1,0 +1,21 @@
+MathJax and LaTeX Macros Example
+Rob Beezer
+2012/08/21
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An example of macros from the source for "A First Course in Linear Algebra"
+(http://linear.pugetsound.edu) both in their original LaTeX form and as
+adapted to be usable with MathJax.
+
+These macros were designed to allow a user to consistently change
+notation throughout the book, though they can also be taken as a
+sort of semantic markup of the source.
+
+These are correct and usable at the time of posting, but will
+not necessarly be maintained.
+
+Contents of both of these files were available under the GFDL
+at the time they were posted here.
+
+fcla-math.sty by Rob Beezer
+mathjax-config.html by David Farmer
